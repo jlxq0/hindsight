@@ -68,6 +68,10 @@ The bank is part of the MCP URL (`/mcp/<bank>/`), so each connection is scoped t
 
 See the [MCP server reference](/developer/mcp-server) for the full tool list and bank-selection rules.
 
+## Make it automatic (optional)
+
+Connecting the app gives agents the memory _tools_ — but an agent only uses them when it decides to. To make memory habitual (recall before acting, retain durable facts as it learns), add the **Hindsight Memory skill**: [download `SKILL.md`](https://hindsight.vectorize.io/skills/openbot/hindsight-memory/SKILL.md), then in OpenBot save it to your local skill library and enable it for the agents that use Hindsight. It's a short instruction set that tells the agent when to call `recall`, `retain`, and `reflect`.
+
 ## Try it
 
 Ask an agent to remember something, then start a fresh thread and ask it back:
