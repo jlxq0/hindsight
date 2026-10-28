@@ -26,7 +26,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import toktok
 from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
 from agent.secret_scope import UnscopedSecretError, get_secret
 from hermes_cli.config import cfg_get
@@ -1785,6 +1784,10 @@ class HindsightMemoryProvider(MemoryProvider):
             # bundled tokenizer also preserves whole Unicode characters and
             # treats special-token literals as ordinary user text.
             if self._recall_max_input_tokens:
+                # Keep retain available if a rebuilt environment temporarily
+                # lacks the tokenizer; the recall below fails closed.
+                import toktok
+
                 query, original_tokens = toktok.truncate(
                     query, self._recall_max_input_tokens, self._recall_query_encoding
                 )
@@ -1813,6 +1816,8 @@ class HindsightMemoryProvider(MemoryProvider):
             # HTTP exception bodies may echo private query text. Keep failure
             # distinct from an empty result without logging request/response data.
             logger.warning("Hindsight recall outcome=error error_type=%s", type(e).__name__)
+            if isinstance(e, ModuleNotFoundError) and e.name == "toktok":
+                logger.warning("Hindsight recall tokenizer missing; run 'hermes pm repair' and restart Hermes")
             return "", 0
 
     def _finish_prefetch(self, result: str, count: int) -> str:

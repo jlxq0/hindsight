@@ -70,6 +70,29 @@ def test_multibank_error_does_not_log_private_response(provider, caplog):
     instance.shutdown()
 
 
+def test_missing_tokenizer_fails_recall_without_disabling_retain(provider, monkeypatch, caplog):
+    import builtins
+
+    caplog.set_level(logging.WARNING)
+    original_import = builtins.__import__
+
+    def missing_tokenizer(name, *args, **kwargs):
+        if name == "toktok":
+            raise ModuleNotFoundError("No module named 'toktok'", name="toktok")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_tokenizer)
+    instance, fake = provider({"recall_sync": True})
+    assert instance.prefetch("private question") == ""
+    assert fake.recalls == []
+    assert "error_type=ModuleNotFoundError" in caplog.text
+    assert "hermes pm repair" in caplog.text
+    result = instance.handle_tool_call("hindsight_retain", {"content": "explicit fact"})
+    assert "ERROR" not in result
+    assert fake.retains
+    instance.shutdown()
+
+
 def test_character_limit_still_precedes_token_limit(provider):
     instance, fake = provider({"recall_sync": True, "recall_max_input_chars": 8})
     instance.prefetch("hello there and more")
