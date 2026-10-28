@@ -273,6 +273,8 @@ The lookup stops at the repository root. Only `bank_id` is read.
 | `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (raw facts) or `reflect` (LLM synthesis) |
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
+| `recall_max_input_tokens` | `500` | Token ceiling applied after the character limit for automatic recall/reflect. Match the server's query cap; `0` disables this additional ceiling. Explicit memory tools still pass their focused query through unchanged. |
+| `recall_query_encoding` | `o200k_base` | Match the server's `HINDSIGHT_API_TOKENIZER_ENCODING`: `o200k_base`, `cl100k_base`, or `o200k_harmony`. The bundled tokenizer makes no network/model calls and cuts only at a complete Unicode character. |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories: a JSON list (e.g. `["project-x", "team"]`) or comma-separated text (`"project-x, team"`) |
 | `recall_tags_match` | `any` | Tag matching mode: `any` / `all` / `any_strict` / `all_strict` |

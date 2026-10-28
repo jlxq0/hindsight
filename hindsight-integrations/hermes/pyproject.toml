@@ -17,6 +17,8 @@ dependencies = [
     # off it, so keep these at >=0.10.1 rather than widening them back.
     "hindsight-client>=0.10.1,<1",
     "hindsight-embed>=0.10.1,<1",
+    # Same bundled BPE vocabularies as the API; no first-use tokenizer download.
+    "toktok-rs>=0.3.0,<0.4",
 ]
 
 # The plugin is loaded from a directory by Hermes, not installed as a distribution.
