@@ -18,3 +18,6 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   runs this regression after assembling the standalone artifact;
   `npm run test:standalone` reruns it against an existing build. A mocked
   middleware test or a health response alone cannot prove page routing works.
+  The regression reads `basePath` from the built artifact; qualify a prefixed
+  build with `NEXT_PUBLIC_BASE_PATH=/hindsight npm run build`. Keep the explicit
+  root matcher: the catch-all does not match a bare base path without a slash.

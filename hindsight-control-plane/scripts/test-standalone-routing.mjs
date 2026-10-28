@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -11,19 +12,28 @@ test(
   "standalone locale routing retains authentication on a non-localhost bind",
   { timeout: 30000 },
   async () => {
+    const standalone = new URL("../standalone/", import.meta.url);
+    const artifact = JSON.parse(
+      await readFile(new URL(".next/required-server-files.json", standalone), "utf8")
+    );
+    const basePath = artifact.config.basePath;
+    assert.equal(typeof basePath, "string");
+    assert.ok(basePath === "" || /^\/(?!\/)[^?#]*[^/]$/.test(basePath));
     const reservation = createServer();
     reservation.listen(0, "127.0.0.1");
     await once(reservation, "listening");
     const port = reservation.address().port;
     await new Promise((resolve) => reservation.close(resolve));
     const origin = `http://127.0.0.1:${port}`;
+    const appOrigin = origin + basePath;
     const key = "synthetic-" + randomUUID();
     const server = spawn(process.execPath, ["server.js"], {
-      cwd: fileURLToPath(new URL("../standalone/", import.meta.url)),
+      cwd: fileURLToPath(standalone),
       env: {
         NODE_ENV: "production",
         HOSTNAME: "127.0.0.1",
         PORT: String(port),
+        NEXT_PUBLIC_BASE_PATH: basePath,
         HINDSIGHT_CP_ACCESS_KEY: key,
         HINDSIGHT_CP_DATAPLANE_API_URL: "http://127.0.0.1:1",
       },
@@ -37,10 +47,11 @@ test(
     server.stderr.on("data", collect);
     const exit = once(server, "exit");
     const request = (path, options = {}) =>
-      fetch(origin + path, {
+      fetch(appOrigin + path, {
         redirect: "manual",
         signal: AbortSignal.timeout(4000),
         ...options,
+        headers: { Connection: "close", ...options.headers },
       });
     const login = (candidate) =>
       request("/api/auth/login", {
@@ -63,7 +74,10 @@ test(
       }
       const anonymous = await request("/dashboard");
       assert.equal(anonymous.status, 307);
-      assert.equal(new URL(anonymous.headers.get("location"), origin).pathname, "/login");
+      assert.equal(
+        new URL(anonymous.headers.get("location"), origin).pathname,
+        basePath + "/login"
+      );
       assert.equal((await request("/api/banks")).status, 401);
       for (const locale of ["en", "de", "zh-CN"]) {
         const page = await request("/login", { headers: { "Accept-Language": locale } });
@@ -80,18 +94,21 @@ test(
         .find((value) => value.startsWith("hindsight_cp_access="));
       assert.match(setCookie, /HttpOnly/i);
       const headers = { cookie: setCookie.split(";")[0] };
-      const home = await request("/", { headers });
+      const home = await request(basePath ? "" : "/", { headers });
       assert.equal(home.status, 307);
-      assert.equal(new URL(home.headers.get("location"), origin).href, origin + "/dashboard");
+      assert.equal(new URL(home.headers.get("location"), origin).href, appOrigin + "/dashboard");
       const dashboard = await request("/dashboard", { headers });
       assert.equal(dashboard.status, 200);
       assert.match(dashboard.headers.get("content-type"), /text\/html/);
       assert.match(await dashboard.text(), /Hindsight/);
       const canonical = await request("/en/dashboard", { headers });
       assert.equal(canonical.status, 307);
-      assert.equal(new URL(canonical.headers.get("location"), origin).pathname, "/dashboard");
+      assert.equal(
+        new URL(canonical.headers.get("location"), origin).pathname,
+        basePath + "/dashboard"
+      );
       const escape = await request("/login?returnTo=%2F%2Fexample.com", { headers });
-      assert.equal(new URL(escape.headers.get("location"), origin).href, origin + "/dashboard");
+      assert.equal(new URL(escape.headers.get("location"), origin).href, appOrigin + "/dashboard");
       const logout = await request("/api/auth/logout", { method: "POST", headers });
       assert.equal(logout.status, 200);
       assert.match(logout.headers.get("set-cookie"), /Max-Age=0/i);

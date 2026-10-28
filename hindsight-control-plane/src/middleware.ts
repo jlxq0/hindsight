@@ -93,6 +93,9 @@ export const config = {
   // - Use an explicit file extension allowlist instead of .*\..* so that
   //   dynamic segments containing dots (e.g. bank IDs like
   //   "SX.Products.GovComply.Build") still get the i18n locale rewrite.
-  matcher:
+  matcher: [
+    // The catch-all requires a slash after basePath; match its bare root too.
+    "/",
     "/((?!_next|_vercel|.*\\.(?:png|jpe?g|gif|svg|webp|ico|css|js|map|woff2?|ttf|eot|txt|xml|json)$).*)",
+  ],
 };
