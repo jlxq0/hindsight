@@ -857,6 +857,16 @@ class HindsightMemoryProvider(MemoryProvider):
                 "description": "Maximum input query length for auto-recall",
                 "default": 800,
             },
+            {
+                "key": "recall_max_input_tokens",
+                "description": "Auto-recall query token ceiling; match the server limit (0 disables)",
+                "default": 500,
+            },
+            {
+                "key": "recall_query_encoding",
+                "description": "Server query tokenizer: o200k_base, cl100k_base, or o200k_harmony",
+                "default": "o200k_base",
+            },
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {
@@ -1000,7 +1010,10 @@ class HindsightMemoryProvider(MemoryProvider):
             text = f"{type(exc).__name__}: {exc}".lower()
             if self._mode != "local_embedded" or not any(m in text for m in _RETRIABLE_CONNECTION_MARKERS):
                 raise
-            logger.info("Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s", exc)
+            logger.info(
+                "Hindsight embedded daemon appears unreachable; recreating client and retrying once: error_type=%s",
+                type(exc).__name__,
+            )
             with self._client_lock:
                 stale, self._client = self._client, None
             if stale is not None:
@@ -1343,7 +1356,8 @@ class HindsightMemoryProvider(MemoryProvider):
             )
         logger.debug(
             "Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-            "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+            "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, "
+            "recall_max_input_tokens=%d, recall_query_encoding=%s, tags=%s, recall_tags=%s",
             self._auto_retain,
             self._auto_recall,
             self._retain_every_n_turns,
@@ -1351,6 +1365,8 @@ class HindsightMemoryProvider(MemoryProvider):
             self._retain_context,
             self._recall_max_tokens,
             self._recall_max_input_chars,
+            self._recall_max_input_tokens,
+            self._recall_query_encoding,
             self._tags,
             self._recall_tags,
         )
@@ -1403,10 +1419,14 @@ class HindsightMemoryProvider(MemoryProvider):
         key = (operation, bank_id)
         if key not in self._extra_bank_down_until:
             logger.warning(
-                "Hindsight %s: skipping bank %s for %.0fs: %r", operation, bank_id, _EXTRA_BANK_COOLDOWN, exc
+                "Hindsight %s: skipping bank %s for %.0fs: error_type=%s",
+                operation,
+                bank_id,
+                _EXTRA_BANK_COOLDOWN,
+                type(exc).__name__,
             )
         else:
-            logger.debug("Hindsight %s: bank %s still failing: %r", operation, bank_id, exc)
+            logger.debug("Hindsight %s: bank %s still failing: error_type=%s", operation, bank_id, type(exc).__name__)
         self._extra_bank_down_until[key] = time.monotonic() + _EXTRA_BANK_COOLDOWN
 
     def _mark_bank_ok(self, operation: str, bank_id: str) -> None:
@@ -1555,6 +1575,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_sync = bool(cfg.get("recall_sync", False))
         self._recall_max_tokens = _parse_int_setting(cfg.get("recall_max_tokens"), 4096)
         self._recall_max_input_chars = _parse_int_setting(cfg.get("recall_max_input_chars"), 800)
+        self._recall_max_input_tokens = _parse_int_setting(cfg.get("recall_max_input_tokens"), 500)
+        self._recall_query_encoding = cfg.get("recall_query_encoding") or "o200k_base"
+        if self._recall_max_input_tokens < 0:
+            raise ValueError("recall_max_input_tokens must be nonnegative")
+        if self._recall_query_encoding not in {"o200k_base", "cl100k_base", "o200k_harmony"}:
+            # A misspelled nonempty encoding must not silently undercount the
+            # server's token boundary. Empty UI fields still use the default.
+            raise ValueError("recall_query_encoding must name a supported server encoding")
         # None -> observation-only (Hindsight's consolidated, deduplicated layer; raw
         # world/experience facts re-ship the evidence they summarize and burn the
         # recall_max_tokens budget); a comma-separated string is accepted for parity
@@ -1751,17 +1779,45 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_max_input_chars:
             query = query[: self._recall_max_input_chars]
         try:
+            # The HTTP API validates tokens before retrieval. A character slice
+            # alone can exceed that cap on code, non-Latin text or emoji. The
+            # bundled tokenizer also preserves whole Unicode characters and
+            # treats special-token literals as ordinary user text.
+            if self._recall_max_input_tokens:
+                # Keep retain available if a rebuilt environment temporarily
+                # lacks the tokenizer; the recall below fails closed.
+                import toktok
+
+                query, original_tokens = toktok.truncate(
+                    query, self._recall_max_input_tokens, self._recall_query_encoding
+                )
+                if original_tokens > self._recall_max_input_tokens:
+                    logger.info(
+                        "Hindsight recall query bounded: original_tokens=%d limit=%d",
+                        original_tokens,
+                        self._recall_max_input_tokens,
+                    )
+            if not query.strip():
+                logger.info("Hindsight recall outcome=empty_query count=0")
+                return "", 0
             if self._prefetch_method == "reflect":
                 logger.debug("Recall: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                return self._reflect(query) or "", 0
+                reflected = self._reflect(query) or ""
+                logger.info("Hindsight recall outcome=%s method=reflect", "success" if reflected else "empty")
+                return reflected, 0
             logger.debug(
                 "Recall: calling recall (bank=%s, query_len=%d, budget=%s)", self._bank_id, len(query), self._budget
             )
             results = self._recall(query)
-            logger.debug("Recall: returned %d results", len(results))
-            return "\n".join(f"- {r.text}" for r in results if r.text), len(results)
+            rendered = "\n".join(f"- {r.text}" for r in results if r.text)
+            logger.info("Hindsight recall outcome=%s count=%d", "success" if rendered else "empty", len(results))
+            return rendered, len(results)
         except Exception as e:
-            logger.warning("Hindsight recall failed: %s", e, exc_info=True)
+            # HTTP exception bodies may echo private query text. Keep failure
+            # distinct from an empty result without logging request/response data.
+            logger.warning("Hindsight recall outcome=error error_type=%s", type(e).__name__)
+            if isinstance(e, ModuleNotFoundError) and e.name == "toktok":
+                logger.warning("Hindsight recall tokenizer missing; run 'hermes pm repair' and restart Hermes")
             return "", 0
 
     def _finish_prefetch(self, result: str, count: int) -> str:
