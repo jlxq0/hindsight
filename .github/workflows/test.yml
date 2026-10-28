@@ -84,11 +84,25 @@ jobs:
       integrations-roo-code: ${{ steps.filter.outputs.integrations-roo-code }}
       dev: ${{ steps.filter.outputs.dev }}
       ci: ${{ steps.filter.outputs.ci }}
-      # Secrets are available for internal PRs and workflow_dispatch.
-      # Fork PRs via pull_request event do NOT have access to secrets.
-      has_secrets: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      # A same-repository PR is eligible for secrets, but a maintained fork may
+      # have none configured. Report the actual baseline provider prerequisites.
+      has_secrets: ${{ steps.provider-credentials.outputs.available }}
     steps:
     - uses: actions/checkout@v6
+
+    - name: Check provider credential availability without exposing values
+      id: provider-credentials
+      if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      env:
+        VERTEX_CREDENTIALS: ${{ secrets.GCP_VERTEXAI_CREDENTIALS }}
+        COHERE_CREDENTIAL: ${{ secrets.COHERE_API_KEY }}
+      run: |
+        if [ -n "$VERTEX_CREDENTIALS" ] && [ -n "$COHERE_CREDENTIAL" ]; then
+          echo "available=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "Live provider tests unavailable: baseline Vertex/Cohere credentials are not configured. Credential-free tests remain enabled." >> "$GITHUB_STEP_SUMMARY"
+        fi
 
     - uses: dorny/paths-filter@v4
       id: filter
@@ -1630,7 +1644,6 @@ jobs:
   build-docker-images:
     needs: [detect-changes]
     if: >-
-      needs.detect-changes.outputs.has_secrets == 'true' &&
       (github.event_name == 'workflow_dispatch' ||
       needs.detect-changes.outputs.core == 'true' ||
       needs.detect-changes.outputs.docker == 'true' ||
@@ -1715,14 +1728,14 @@ jobs:
     # credentials at all, so the credential step stays gated on the variant
     # while the smoke test itself is gated on `smoke`.
     - name: Setup GCP credentials for smoke test
-      if: matrix.variant == 'slim' && matrix.smoke
+      if: matrix.variant == 'slim' && matrix.smoke && needs.detect-changes.outputs.has_secrets == 'true'
       run: |
         printf '%s' '${{ secrets.GCP_VERTEXAI_CREDENTIALS }}' > /tmp/gcp-credentials.json
         PROJECT_ID=$(jq -r '.project_id' /tmp/gcp-credentials.json)
         echo "HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID=$PROJECT_ID" >> $GITHUB_ENV
 
     - name: Smoke test - verify container starts
-      if: matrix.smoke
+      if: matrix.smoke && (matrix.target == 'cp-only' || needs.detect-changes.outputs.has_secrets == 'true')
       env:
         HINDSIGHT_API_LLM_PROVIDER: vertexai
         HINDSIGHT_API_LLM_MODEL: google/gemini-2.5-flash-lite
