@@ -51,6 +51,7 @@ from .embedded import (
     _start_daemon,
     _stop_daemon,
 )
+from .provenance import EVIDENCE_PREAMBLE, RecalledMemory, with_provenance
 from .settings import (
     _DEFAULT_API_URL,
     _DEFAULT_IDLE_TIMEOUT,
@@ -868,6 +869,11 @@ class HindsightMemoryProvider(MemoryProvider):
                 "default": "o200k_base",
             },
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
+            {
+                "key": "recall_provenance",
+                "description": "Render recall as historical JSON records with source bank, IDs and available event dates",
+                "default": False,
+            },
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {
                 "key": "idle_timeout",
@@ -1594,6 +1600,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list([] if configured_types is None else configured_types) or ["observation"]
         self._recall_min_scores = _normalize_min_scores(cfg.get("recall_min_scores"))
         self._recall_prompt_preamble = cfg.get("recall_prompt_preamble", "")
+        self._recall_provenance = cfg.get("recall_provenance", False) is True
         self._recall_indicator = bool(cfg.get("recall_indicator", True))
 
     def _start_embedded_daemon(self) -> None:
@@ -1757,7 +1764,10 @@ class HindsightMemoryProvider(MemoryProvider):
             # Drop only what an earlier bank already returned; one bank's own answer passes
             # through untouched, so a single-bank recall is exactly the server's response.
             kept = [r for r in bank_results if getattr(r, "text", None) not in seen]
-            results.extend(kept)
+            if self._recall_provenance:
+                results.extend(with_provenance(r, bank_id) for r in kept)
+            else:
+                results.extend(kept)
             seen.update(text for r in kept if (text := getattr(r, "text", None)))
         return results
 
@@ -1809,7 +1819,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 "Recall: calling recall (bank=%s, query_len=%d, budget=%s)", self._bank_id, len(query), self._budget
             )
             results = self._recall(query)
-            rendered = "\n".join(f"- {r.text}" for r in results if r.text)
+            rendered = "\n".join(
+                r.render() if isinstance(r, RecalledMemory) else f"- {r.text}" for r in results if r.text
+            )
             logger.info("Hindsight recall outcome=%s count=%d", "success" if rendered else "empty", len(results))
             return rendered, len(results)
         except Exception as e:
@@ -1832,6 +1844,8 @@ class HindsightMemoryProvider(MemoryProvider):
             "Use this to answer questions about the user and prior sessions. "
             "Do not call tools to look up information that is already present here."
         )
+        if self._recall_provenance and self._prefetch_method != "reflect":
+            header = f"{header}\n{EVIDENCE_PREAMBLE}"
         return f"{header}\n\n{result}"
 
     def _join_prefetch(self, timeout: float, *, log: bool = False) -> None:
@@ -2168,6 +2182,8 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s", self._bank_id, len(query), self._budget)
         results = self._recall(query)
         logger.debug("Tool hindsight_recall: %d results", len(results))
+        if self._recall_provenance and results:
+            return EVIDENCE_PREAMBLE + "\n" + "\n".join(r.render() for r in results)
         return "\n".join(f"{i}. {r.text}" for i, r in enumerate(results, 1)) or "No relevant memories found."
 
     def _tool_reflect(self, args: dict) -> str:
