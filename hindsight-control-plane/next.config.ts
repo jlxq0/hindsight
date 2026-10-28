@@ -25,6 +25,9 @@ const maxUploadBodySize: SizeLimit = maxUploadEnv
 
 const nextConfig: NextConfig = {
   output: 'standalone',
+  // Keep the standalone bind origin intact for next-intl's internal rewrites.
+  // Normalizing it to localhost makes a non-localhost bind redirect to itself.
+  skipProxyUrlNormalize: true,
   distDir,
   basePath: basePath,
   assetPrefix: basePath,
