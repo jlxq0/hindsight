@@ -91,5 +91,13 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             options=tuple(ProviderFieldOption(b, b) for b in ("low", "mid", "high")),
             inline=True,
         ),
+        ProviderField(
+            key="recall_provenance",
+            label="Recall source evidence",
+            kind=KIND_BOOL,
+            default=False,
+            inline=True,
+            description="Include historical source IDs and available event dates in recall context and tool results.",
+        ),
     ),
 )
